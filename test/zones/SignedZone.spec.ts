@@ -28,6 +28,7 @@ import {
 
 import type {
   ConsiderationInterface,
+  ReferenceSignedZone__factory,
   SignedZone,
   SignedZone__factory,
 } from "../../typechain-types";
@@ -44,8 +45,15 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
   const { provider } = ethers;
   const owner = new ethers.Wallet(randomHex(32), provider);
 
+  // Version byte for SIP-6 using Substandard 1
+  const sip6VersionByte = "00";
+
+  // Set to run tests against the reference implementation
+  const isReference = false;
+
   let marketplaceContract: ConsiderationInterface;
   let signedZoneFactory: SignedZone__factory;
+  let referenceSignedZoneFactory: ReferenceSignedZone__factory;
   let signedZone: SignedZone;
 
   let checkExpectedEvents: SeaportFixtures["checkExpectedEvents"];
@@ -93,17 +101,27 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
 
     chainId = (await provider.getNetwork()).chainId;
 
-    const subStandards = [1, 2, 3, 4, 5];
     const documentationURI =
       "https://github.com/ProjectOpenSea/SIPs/blob/main/SIPS/sip-7.md";
 
-    signedZoneFactory = await ethers.getContractFactory("SignedZone", owner);
-    signedZone = await signedZoneFactory.deploy(
-      "OpenSeaSignedZone",
-      "https://api.opensea.io/api/v2/sign",
-      subStandards,
-      documentationURI
-    );
+    if (!isReference) {
+      signedZoneFactory = await ethers.getContractFactory("SignedZone", owner);
+      signedZone = await signedZoneFactory.deploy(
+        "OpenSeaSignedZone",
+        "https://api.opensea.io/api/v2/sign",
+        documentationURI
+      );
+    } else {
+      referenceSignedZoneFactory = await ethers.getContractFactory(
+        "ReferenceSignedZone",
+        owner
+      );
+      signedZone = await referenceSignedZoneFactory.deploy(
+        "OpenSeaSignedZone",
+        "https://api.opensea.io/api/v2/sign",
+        documentationURI
+      );
+    }
   });
 
   const toPaddedBytes = (value: number, numBytes = 32) =>
@@ -177,7 +195,6 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
     expect(recoveredAddress).to.equal(signer.address);
 
     // extraData to be set on the order, according to SIP-7
-    const sip6VersionByte = "00";
     const extraData = `0x${sip6VersionByte}${fulfiller.slice(2)}${toPaddedBytes(
       expiration,
       8
@@ -195,6 +212,7 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
     const consideration = [
       getItemETH(parseEther("10"), parseEther("10"), seller.address),
       getItemETH(parseEther("1"), parseEther("1"), owner.address),
+      getItemETH(parseEther("1"), parseEther("1"), approvedSigner.address),
     ];
 
     const { order, orderHash, value } = await createOrder(
@@ -205,8 +223,12 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
       2 // FULL_RESTRICTED
     );
 
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     order.extraData = (
-      await signOrder(orderHash, "0x1234", approvedSigner)
+      await signOrder(orderHash, substandard1Data, approvedSigner)
     ).extraData;
 
     // Expect failure if signer is not approved
@@ -274,8 +296,18 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
       2 // FULL_RESTRICTED
     );
 
+    // Get the substandard1 data
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     order.extraData = (
-      await signOrder(orderHash, undefined, approvedSigner, buyer.address)
+      await signOrder(
+        orderHash,
+        substandard1Data,
+        approvedSigner,
+        buyer.address
+      )
     ).extraData;
 
     // Approve signer
@@ -351,8 +383,13 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
       criteriaResolvers
     );
 
+    // Get the substandard1 data
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     order.extraData = (
-      await signOrder(orderHash, undefined, approvedSigner)
+      await signOrder(orderHash, substandard1Data, approvedSigner)
     ).extraData;
 
     // Expect failure if signer is not approved
@@ -429,9 +466,14 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
     // Approve signer
     await signedZone.addSigner(approvedSigner.address);
 
+    // Get the substandard1 data
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     const { extraData, expiration } = await signOrder(
       orderHash,
-      undefined,
+      substandard1Data,
       approvedSigner,
       undefined,
       -1000
@@ -474,6 +516,150 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
     )
       .to.be.revertedWithCustomError(signedZone, "SignerNotActive")
       .withArgs(anyValue, orderHash);
+  });
+  it("Revert: Fulfills an order without the correct substandard version", async () => {
+    // Execute 721 <=> ETH order
+    const nftId = await mintAndApprove721(seller, marketplaceContract.address);
+
+    const offer = [getTestItem721(nftId)];
+
+    const consideration = [
+      getItemETH(parseEther("10"), parseEther("10"), seller.address),
+      getItemETH(parseEther("1"), parseEther("1"), owner.address),
+    ];
+
+    const { order, orderHash, value } = await createOrder(
+      seller,
+      signedZone.address,
+      offer,
+      consideration,
+      2 // FULL_RESTRICTED
+    );
+
+    // Set incorrect version byte
+    const incorrectVersionByte = "01";
+    const substandard1Data = `0x${incorrectVersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
+    order.extraData = (
+      await signOrder(orderHash, substandard1Data, approvedSigner)
+    ).extraData;
+
+    // Approve signer
+    await signedZone.addSigner(approvedSigner.address);
+
+    // Expect failure
+    await expect(
+      marketplaceContract
+        .connect(buyer)
+        .fulfillAdvancedOrder(
+          order,
+          [],
+          toKey(0),
+          ethers.constants.AddressZero,
+          {
+            value,
+          }
+        )
+    )
+      .to.be.revertedWithCustomError(signedZone, "InvalidSubstandardVersion")
+      .withArgs(orderHash);
+  });
+  it("Revert: Try to fulfill an order with an incorrect token identifier", async () => {
+    // Execute 721 <=> ETH order
+    const nftId = await mintAndApprove721(seller, marketplaceContract.address);
+
+    const offer = [getTestItem721(nftId)];
+
+    const consideration = [
+      getItemETH(parseEther("10"), parseEther("10"), seller.address),
+      getItemETH(parseEther("1"), parseEther("1"), owner.address),
+    ];
+
+    const { order, orderHash, value } = await createOrder(
+      seller,
+      signedZone.address,
+      offer,
+      consideration,
+      2 // FULL_RESTRICTED
+    );
+
+    const expectedTokenID = 9999;
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      expectedTokenID
+    ).toString()}`;
+
+    order.extraData = (
+      await signOrder(orderHash, substandard1Data, approvedSigner)
+    ).extraData;
+
+    // Approve signer
+    await signedZone.addSigner(approvedSigner.address);
+
+    // Expect failure if signer is not approved
+    await expect(
+      marketplaceContract
+        .connect(buyer)
+        .fulfillAdvancedOrder(
+          order,
+          [],
+          toKey(0),
+          ethers.constants.AddressZero,
+          {
+            value,
+          }
+        )
+    )
+      .to.be.revertedWithCustomError(signedZone, "InvalidReceivedItem")
+      .withArgs(
+        expectedTokenID,
+        consideration[0].identifierOrCriteria,
+        orderHash
+      );
+  });
+  it("Revert: Try to fulfill an order with no considerations", async () => {
+    // Execute 721 <=> ETH order
+    const nftId = await mintAndApprove721(seller, marketplaceContract.address);
+
+    const offer = [getTestItem721(nftId)];
+
+    const { order, orderHash, value } = await createOrder(
+      seller,
+      signedZone.address,
+      offer,
+      [],
+      2 // FULL_RESTRICTED
+    );
+
+    const expectedTokenID = 1;
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      expectedTokenID
+    ).toString()}`;
+
+    order.extraData = (
+      await signOrder(orderHash, substandard1Data, approvedSigner)
+    ).extraData;
+
+    // Approve signer
+    await signedZone.addSigner(approvedSigner.address);
+
+    // Expect failure if signer is not approved
+    await expect(
+      marketplaceContract
+        .connect(buyer)
+        .fulfillAdvancedOrder(
+          order,
+          [],
+          toKey(0),
+          ethers.constants.AddressZero,
+          {
+            value,
+          }
+        )
+    )
+      .to.be.revertedWithCustomError(signedZone, "InvalidSubstandardSupport")
+      .withArgs("Consideration must have at least one item.", 1, orderHash);
   });
   it("Only the owner or active signers can set and remove signers", async () => {
     await expect(
@@ -560,7 +746,7 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
     const information = await signedZone.sip7Information();
     expect(information[0].length).to.eq(66);
     expect(information[1]).to.eq("https://api.opensea.io/api/v2/sign");
-    expect(information[2]).to.deep.eq([1, 2, 3, 4, 5].map((s) => toBN(s)));
+    expect(information[2]).to.deep.eq([1].map((s) => toBN(s)));
     expect(information[3]).to.eq(
       "https://github.com/ProjectOpenSea/SIPs/blob/main/SIPS/sip-7.md"
     );
@@ -621,8 +807,12 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
       2 // FULL_RESTRICTED
     );
 
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     const validExtraData = (
-      await signOrder(orderHash, "0x1234", approvedSigner)
+      await signOrder(orderHash, substandard1Data, approvedSigner)
     ).extraData;
 
     // Approve signer
@@ -642,8 +832,8 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
           }
         )
     )
-      .to.be.revertedWithCustomError(signedZone, "InvalidExtraData")
-      .withArgs("extraData length must be at least 93 bytes", orderHash);
+      .to.be.revertedWithCustomError(signedZone, "InvalidExtraDataLength")
+      .withArgs(orderHash);
 
     // Expect failure with invalid length extraData
     order.extraData = validExtraData.slice(0, 50);
@@ -660,8 +850,8 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
           }
         )
     )
-      .to.be.revertedWithCustomError(signedZone, "InvalidExtraData")
-      .withArgs("extraData length must be at least 93 bytes", orderHash);
+      .to.be.revertedWithCustomError(signedZone, "InvalidExtraDataLength")
+      .withArgs(orderHash);
 
     // Expect failure with non-zero SIP-6 version byte
     order.extraData = "0x" + "01" + validExtraData.slice(4);
@@ -678,8 +868,8 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
           }
         )
     )
-      .to.be.revertedWithCustomError(signedZone, "InvalidExtraData")
-      .withArgs("SIP-6 version byte must be 0x00", orderHash);
+      .to.be.revertedWithCustomError(signedZone, "InvalidSIP6Version")
+      .withArgs(orderHash);
 
     // Expect success with valid extraData
     order.extraData = validExtraData;
@@ -736,8 +926,12 @@ describe(`Zone - SignedZone (Seaport v${VERSION})`, function () {
       2 // FULL_RESTRICTED
     );
 
+    const substandard1Data = `0x${sip6VersionByte}${toPaddedBytes(
+      consideration[0].identifierOrCriteria.toNumber()
+    ).toString()}`;
+
     order.extraData = (
-      await signOrder(orderHash, undefined, approvedSigner)
+      await signOrder(orderHash, substandard1Data, approvedSigner)
     ).extraData;
 
     // Expect failure if signer is not approved
