@@ -84,6 +84,12 @@ contract ReferenceTokenTransferrer is TokenTransferrerErrors {
             revert NoContract(token);
         }
 
+        // NAZ: interesting that here token is actually wrapped in an interface
+        // unlike with ERC20. Perhaps it's because transferFrom does not return a bool?
+        // Indeed. According to EIP721: https://eips.ethereum.org/EIPS/eip-721
+        // transferFrom returns nothing. Could be the reason why.
+        // This isn't the case for EIP20, btw: https://eips.ethereum.org/EIPS/eip-20
+        // it does return a bool!
         ERC721Interface(token).transferFrom(from, to, identifier);
     }
 
@@ -111,6 +117,8 @@ contract ReferenceTokenTransferrer is TokenTransferrerErrors {
             revert NoContract(token);
         }
 
+        // NAZ: just like ERC721, ERC1155 is also wrapped in an interface
+        // but also safeTransferFrom returns nothing as per: https://eips.ethereum.org/EIPS/eip-1155
         ERC1155Interface(token).safeTransferFrom(
             from,
             to,
