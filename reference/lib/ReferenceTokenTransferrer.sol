@@ -35,7 +35,7 @@ contract ReferenceTokenTransferrer is TokenTransferrerErrors {
             revert NoContract(token);
         }
 
-        // NAZ: why not case into IERC20 and call transferFrom directly?
+        // NAZ: why not cast into IERC20 and call transferFrom directly?
         (bool ok, bytes memory data) = token.call(
             abi.encodeWithSelector(
                 ERC20Interface.transferFrom.selector,
