@@ -50,6 +50,8 @@ contract ReferenceTokenTransferrer is TokenTransferrerErrors {
             revert TokenTransferGenericFailure(token, from, to, 0, amount);
         }
 
+        // NAZ: both of these checks are redundant
+        // data.length >= 32 already implies that data.length != 0 is true
         if (data.length != 0 && data.length >= 32) {
             if (!abi.decode(data, (bool))) {
                 revert BadReturnValueFromERC20OnTransfer(
